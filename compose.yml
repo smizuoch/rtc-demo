@@ -1,0 +1,9 @@
+services:
+  server:
+    build: .
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./certs:/app/certs:ro
+    environment:
+      - NODE_ENV=production
