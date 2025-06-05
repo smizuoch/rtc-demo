@@ -1,8 +1,8 @@
-import fastify from 'fastify';
-import fs from 'fs';
+import Fastify from 'fastify';
+import fs from 'node:fs';
 import path from 'path';
 
-const server = fastify({
+const fastify = Fastify({
   logger: true,
   https: {
     key: fs.readFileSync(path.join(__dirname, '../certs/key.pem')),
@@ -10,16 +10,18 @@ const server = fastify({
   }
 });
 
-server.get('/', async (request, reply) => {
+fastify.get('/', async (request, reply) => {
   return { message: 'WebRTC Demo Server' };
 });
 
+fastify.get('/health', () => ({ status: 'ok' }));
+
 const start = async () => {
   try {
-    await server.listen({ port: 8443, host: '0.0.0.0' });
+    await fastify.listen({ port: 8443, host: '0.0.0.0' });
     console.log('Server is running on https://localhost:8443');
   } catch (err) {
-    server.log.error(err);
+    fastify.log.error(err);
     process.exit(1);
   }
 };
