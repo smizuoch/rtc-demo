@@ -1,122 +1,151 @@
 import * as mediasoup from 'mediasoup';
 import { RoomManager } from '../src/Room';
-import Fastify, { FastifyInstance } from 'fastify';
+import { FastifyInstance } from 'fastify';
+import { createServer } from '../src/server';
 
+// グローバル変数の型定義
 declare global {
-  var app: FastifyInstance;
-  var worker: mediasoup.types.Worker;
+  // NodeJSのグローバル名前空間を拡張
   var roomManager: RoomManager;
+  var worker: mediasoup.types.Worker;
+  var app: FastifyInstance;
+  var cleanup: () => Promise<void>;
 }
 
 beforeAll(async () => {
-  // mediasoup Worker初期化
-  global.worker = await mediasoup.createWorker({
+  // MediaSoupワーカーを作成
+  const worker = await mediasoup.createWorker({
     rtcMinPort: 40000,
     rtcMaxPort: 40100
   });
   
-  global.roomManager = new RoomManager(global.worker);
+  // RoomManagerを作成してグローバルに設定
+  const roomManager = new RoomManager(worker);
+  global.roomManager = roomManager;
+  global.worker = worker;
   
-  // Fastifyアプリケーション初期化
-  global.app = Fastify({ logger: false });
+  // サーバーアプリケーションを作成
+  const app = await createServer({ roomManager });
+  global.app = app;
   
-  // API routes
-  global.app.get('/api/rooms', async (request, reply) => {
+  // テスト終了時のクリーンアップ関数
+  global.cleanup = async () => {
+    // 全ルームの情報をログ出力
     const rooms = global.roomManager.getAllRooms().map(room => ({
       id: room.id,
-      peersCount: room.peers.size,
-      transportsCount: room.transports.size,
-      producersCount: room.producers.size,
-      consumersCount: room.consumers.size
+      transports: room.transports ? room.transports.size : 0,
+      producers: room.producers ? room.producers.size : 0,
+      consumers: room.consumers ? room.consumers.size : 0
     }));
-    return rooms;
-  });
-
-  global.app.post<{ Body: { id: string } }>('/api/rooms', async (request, reply) => {
-    const { id } = request.body;
-    const room = await global.roomManager.createRoom(id);
-    reply.code(201);
-    return { id: room.id };
-  });
-
-  global.app.get<{ Params: { id: string } }>('/api/rooms/:id', async (request, reply) => {
-    const { id } = request.params;
-    const room = global.roomManager.getRoom(id);
-    if (!room) {
-      reply.code(404);
-      return { error: 'Room not found' };
+    
+    console.log('Cleaning up rooms:', rooms);
+    
+    // すべてのルームを削除
+    for (const room of global.roomManager.getAllRooms()) {
+      global.roomManager.deleteRoom(room.id);
     }
-    return { id: room.id };
-  });
+  };
 
+  // ルーム削除エンドポイント
   global.app.delete<{ Params: { id: string } }>('/api/rooms/:id', async (request, reply) => {
     const { id } = request.params;
+    
     const deleted = global.roomManager.deleteRoom(id);
+    
     if (!deleted) {
-      reply.code(404);
-      return { error: 'Room not found' };
+      reply.status(404).send({
+        error: 'Room not found'
+      });
+      return;
     }
-    reply.code(204);
+    
+    reply.status(200).send({ success: true });
     return;
   });
 
+  // トランスポートパラメータ取得エンドポイント
   global.app.get('/api/transport/params', async (request, reply) => {
-    // デフォルトルームを作成してトランスポートパラメータを返す
+    // デフォルトルームを取得または作成
     const room = await global.roomManager.createRoom('default');
+    
+    // WebRTCトランスポートを作成
     const transport = await room.router.createWebRtcTransport({
       listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
       enableUdp: true,
-      enableTcp: true
+      enableTcp: true,
+      preferUdp: true
     });
-
-    const params = {
+    
+    reply.send({
+      id: transport.id,
       iceParameters: transport.iceParameters,
-      dtlsParameters: transport.dtlsParameters
-    };
-
-    transport.close();
-    return params;
+      iceCandidates: transport.iceCandidates,
+      dtlsParameters: transport.dtlsParameters,
+      sctpParameters: transport.sctpParameters
+    });
   });
 
-  global.app.post<{ 
-    Body: { 
-      roomId: string; 
-      kind: string; 
-      rtpParameters: any; 
-    } 
+  // プロデューサー作成エンドポイント
+  global.app.post<{
+    Body: {
+      transportId: string;
+      kind: mediasoup.types.MediaKind;
+      rtpParameters: mediasoup.types.RtpParameters;
+      roomId: string;
+    }
   }>('/api/transport/produce', async (request, reply) => {
-    const { roomId, kind, rtpParameters } = request.body;
+    const { transportId, kind, rtpParameters, roomId } = request.body;
+    
     const room = global.roomManager.getRoom(roomId);
     if (!room) {
-      reply.code(404);
-      return { error: 'Room not found' };
+      return reply.status(404).send({ error: 'Room not found' });
     }
-
-    // モックプロデューサーレスポンス
+    
+    const transport = room.transports?.get(transportId);
+    if (!transport) {
+      return reply.status(404).send({ error: 'Transport not found' });
+    }
+    
+    const producer = await transport.produce({ kind, rtpParameters });
+    
     return {
-      id: `producer-${Date.now()}`,
-      kind
+      id: producer.id,
+      kind: producer.kind
     };
   });
 
-  global.app.post<{ 
-    Body: { 
-      roomId: string; 
-      producerId: string; 
-      kind: string; 
-    } 
+  // コンシューマー作成エンドポイント
+  global.app.post<{
+    Body: {
+      transportId: string;
+      producerId: string;
+      rtpCapabilities: mediasoup.types.RtpCapabilities;
+      roomId: string;
+    }
   }>('/api/transport/consume', async (request, reply) => {
-    const { roomId, producerId, kind } = request.body;
+    const { transportId, producerId, rtpCapabilities, roomId } = request.body;
+    
     const room = global.roomManager.getRoom(roomId);
     if (!room) {
-      reply.code(404);
-      return { error: 'Room not found' };
+      return reply.status(404).send({ error: 'Room not found' });
     }
-
-    // モックコンシューマーレスポンス
+    
+    const transport = room.transports?.get(transportId);
+    if (!transport) {
+      return reply.status(404).send({ error: 'Transport not found' });
+    }
+    
+    const consumer = await transport.consume({
+      producerId,
+      rtpCapabilities,
+      paused: true
+    });
+    
     return {
-      id: `consumer-${Date.now()}`,
-      kind
+      id: consumer.id,
+      kind: consumer.kind,
+      rtpParameters: consumer.rtpParameters,
+      producerId: consumer.producerId
     };
   });
 
@@ -124,9 +153,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (global.cleanup) {
+    await global.cleanup();
+  }
+  
   if (global.app) {
     await global.app.close();
   }
+  
   if (global.worker) {
     global.worker.close();
   }
