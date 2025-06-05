@@ -115,6 +115,117 @@ export async function createServer(options: ServerOptions): Promise<FastifyInsta
     };
   });
 
+  // トランスポート接続
+  app.post<{ 
+    Params: { roomId: string, transportId: string },
+    Body: { dtlsParameters: mediasoup.types.DtlsParameters }
+  }>('/rooms/:roomId/transports/:transportId/connect', async (request, reply) => {
+    const { roomId, transportId } = request.params;
+    const { dtlsParameters } = request.body;
+    
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      reply.code(404).send({ error: 'Room not found' });
+      return;
+    }
+    
+    const transport = room.getTransport(transportId);
+    if (!transport) {
+      reply.code(404).send({ error: 'Transport not found' });
+      return;
+    }
+    
+    await (transport as mediasoup.types.WebRtcTransport).connect({ dtlsParameters });
+    
+    return { success: true };
+  });
+
+  // コンシューマー作成
+  app.post<{ 
+    Params: { roomId: string, transportId: string },
+    Body: { producerId: string, rtpCapabilities: mediasoup.types.RtpCapabilities }
+  }>('/rooms/:roomId/transports/:transportId/consumers', async (request, reply) => {
+    const { roomId, transportId } = request.params;
+    const { producerId, rtpCapabilities } = request.body;
+    
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      reply.code(404).send({ error: 'Room not found' });
+      return;
+    }
+    
+    const transport = room.getTransport(transportId);
+    if (!transport) {
+      reply.code(404).send({ error: 'Transport not found' });
+      return;
+    }
+    
+    // プロデューサーが存在するかチェック
+    const producer = room.getProducer(producerId);
+    if (!producer) {
+      reply.code(404).send({ error: 'Producer not found' });
+      return;
+    }
+    
+    // コンシューマーを作成
+    const consumer = await (transport as mediasoup.types.WebRtcTransport).consume({
+      producerId,
+      rtpCapabilities,
+      paused: true
+    });
+    
+    room.addConsumer(consumer);
+    
+    return {
+      id: consumer.id,
+      producerId: consumer.producerId,
+      kind: consumer.kind,
+      rtpParameters: consumer.rtpParameters
+    };
+  });
+
+  // コンシューマー再開
+  app.post<{ 
+    Params: { roomId: string, consumerId: string }
+  }>('/rooms/:roomId/consumers/:consumerId/resume', async (request, reply) => {
+    const { roomId, consumerId } = request.params;
+    
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      reply.code(404).send({ error: 'Room not found' });
+      return;
+    }
+    
+    const consumer = room.getConsumer(consumerId);
+    if (!consumer) {
+      reply.code(404).send({ error: 'Consumer not found' });
+      return;
+    }
+    
+    await consumer.resume();
+    
+    return { success: true };
+  });
+
+  // プロデューサー一覧取得
+  app.get<{ Params: { roomId: string } }>('/rooms/:roomId/producers', async (request, reply) => {
+    const { roomId } = request.params;
+    
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      reply.code(404).send({ error: 'Room not found' });
+      return;
+    }
+    
+    const producers = Array.from(room.producers.values()).map(producer => ({
+      id: producer.id,
+      kind: producer.kind,
+      paused: producer.paused
+    }));
+    
+    return { producers };
+  });
+
   return app;
 }
 

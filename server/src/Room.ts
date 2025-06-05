@@ -6,6 +6,7 @@ export class Room {
   public transports: Map<string, mediasoup.types.Transport>;
   public producers: Map<string, mediasoup.types.Producer>;
   public consumers: Map<string, mediasoup.types.Consumer>;
+  public peers: Map<string, any>; // ピア情報を管理
 
   constructor(id: string, router: mediasoup.types.Router) {
     this.id = id;
@@ -13,6 +14,7 @@ export class Room {
     this.transports = new Map();
     this.producers = new Map();
     this.consumers = new Map();
+    this.peers = new Map(); // ピアマップを初期化
   }
 
   /**

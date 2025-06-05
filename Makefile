@@ -13,6 +13,12 @@ down:               ## コンテナ停止
 logs:               ## リアルタイムログ
 	docker compose logs -f server
 
+debug:              ## エラーログ確認
+	docker compose logs server
+
+restart:            ## 再起動
+	docker compose down && make up
+
 cert: $(CERT_KEY) $(CERT_PEM)
 certs: cert         ## `make certs` でも証明書生成可能
 $(CERT_KEY) $(CERT_PEM):
