@@ -3,6 +3,7 @@ import { Server as IOServer } from 'socket.io';
 import fs from 'node:fs';
 import path from 'path';
 import * as mediasoup from 'mediasoup';
+import { RoomManager } from './Room';
 
 const fastify = Fastify({
   logger: true,
@@ -14,7 +15,7 @@ const fastify = Fastify({
 
 // mediasoup Worker初期化
 let worker: mediasoup.types.Worker;
-let router: mediasoup.types.Router;
+let roomManager: RoomManager;
 
 async function initMediasoup() {
   try {
@@ -25,12 +26,7 @@ async function initMediasoup() {
     
     console.log(`mediasoup Worker created with PID: ${worker.pid}`);
     
-    router = await worker.createRouter({ 
-      mediaCodecs: [
-        { kind:'audio', mimeType:'audio/opus', clockRate:48000, channels:2 },
-        { kind:'video', mimeType:'video/VP8',  clockRate:90000 }
-      ]
-    });
+    roomManager = new RoomManager(worker);
     
     console.log('mediasoup Router created');
   } catch (error) {
@@ -50,6 +46,71 @@ fastify.get('/api', async (request, reply) => {
 });
 
 fastify.get('/health', () => ({ status: 'ok' }));
+
+// ルーム作成API
+fastify.post<{ Params: { id: string } }>('/rooms/:id', async (request, reply) => {
+  try {
+    const roomId = request.params.id;
+    const room = await roomManager.createRoom(roomId);
+    
+    return {
+      roomId: room.id,
+      rtpCapabilities: room.router.rtpCapabilities
+    };
+  } catch (error) {
+    fastify.log.error(error);
+    reply.code(500).send({ error: 'Failed to create room' });
+  }
+});
+
+// WebRTCトランスポート作成API
+fastify.post<{ 
+  Params: { id: string };
+  Body: { forceTcp?: boolean; producing?: boolean; consuming?: boolean } 
+}>('/rooms/:id/transports', async (request, reply) => {
+  try {
+    const roomId = request.params.id;
+    const { forceTcp = false, producing = false, consuming = false } = request.body || {};
+    
+    const room = roomManager.getRoom(roomId);
+    if (!room) {
+      return reply.code(404).send({ error: 'Room not found' });
+    }
+
+    const transport = await room.router.createWebRtcTransport({
+      listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+      enableUdp: !forceTcp,
+      enableTcp: true,
+      preferUdp: !forceTcp
+    });
+
+    room.transports.set(transport.id, transport);
+
+    return {
+      id: transport.id,
+      iceParameters: transport.iceParameters,
+      iceCandidates: transport.iceCandidates,
+      dtlsParameters: transport.dtlsParameters,
+      sctpParameters: transport.sctpParameters
+    };
+  } catch (error) {
+    fastify.log.error(error);
+    reply.code(500).send({ error: 'Failed to create transport' });
+  }
+});
+
+// ルーム一覧取得API
+fastify.get('/rooms', async (request, reply) => {
+  const rooms = roomManager.getAllRooms().map(room => ({
+    id: room.id,
+    peersCount: room.peers.size,
+    transportsCount: room.transports.size,
+    producersCount: room.producers.size,
+    consumersCount: room.consumers.size
+  }));
+  
+  return { rooms };
+});
 
 const start = async () => {
   try {
@@ -85,5 +146,8 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+// テスト用にexport
+export { fastify, roomManager };
 
 start();
