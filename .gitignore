@@ -1,3 +1,4 @@
 certs/*
 server/node_modules/*
+server/public/libs/*
 package-lock.json

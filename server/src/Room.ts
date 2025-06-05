@@ -1,14 +1,24 @@
 import * as mediasoup from 'mediasoup';
+import { EventEmitter } from 'events';
 
-export class Room {
+export interface Peer {
+  id: string;
+  socket?: any;
+  transports: Map<string, mediasoup.types.Transport>;
+  producers: Map<string, mediasoup.types.Producer>;
+  consumers: Map<string, mediasoup.types.Consumer>;
+}
+
+export class Room extends EventEmitter {
   public id: string;
   public router: mediasoup.types.Router;
   public transports: Map<string, mediasoup.types.Transport>;
   public producers: Map<string, mediasoup.types.Producer>;
   public consumers: Map<string, mediasoup.types.Consumer>;
-  public peers: Map<string, any>; // ピア情報を管理
+  public peers: Map<string, Peer>; 
 
   constructor(id: string, router: mediasoup.types.Router) {
+    super();
     this.id = id;
     this.router = router;
     this.transports = new Map();
@@ -75,6 +85,109 @@ export class Room {
    */
   getConsumer(consumerId: string): mediasoup.types.Consumer | undefined {
     return this.consumers.get(consumerId);
+  }
+
+  /**
+   * ピアを追加
+   */
+  addPeer(peerId: string, socket?: any): Peer {
+    const peer: Peer = {
+      id: peerId,
+      socket,
+      transports: new Map(),
+      producers: new Map(),
+      consumers: new Map()
+    };
+    
+    this.peers.set(peerId, peer);
+    this.emit('peerJoined', peerId, peer);
+    return peer;
+  }
+
+  /**
+   * ピアを削除
+   */
+  removePeer(peerId: string): boolean {
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      // ピアの全リソースを削除
+      peer.transports.forEach(transport => transport.close());
+      peer.producers.forEach(producer => producer.close());
+      peer.consumers.forEach(consumer => consumer.close());
+      
+      this.peers.delete(peerId);
+      this.emit('peerLeft', peerId);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * ピアを取得
+   */
+  getPeer(peerId: string): Peer | undefined {
+    return this.peers.get(peerId);
+  }
+
+  /**
+   * プロデューサーをピアに関連付けて保存
+   */
+  addProducerForPeer(peerId: string, producer: mediasoup.types.Producer): void {
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      peer.producers.set(producer.id, producer);
+    }
+    this.addProducer(producer);
+    
+    // 他のピアに新しいプロデューサーを通知
+    this.notifyPeersAboutNewProducer(peerId, producer);
+  }
+
+  /**
+   * コンシューマーをピアに関連付けて保存
+   */
+  addConsumerForPeer(peerId: string, consumer: mediasoup.types.Consumer): void {
+    const peer = this.peers.get(peerId);
+    if (peer) {
+      peer.consumers.set(consumer.id, consumer);
+    }
+    this.addConsumer(consumer);
+  }
+
+  /**
+   * 新しいプロデューサーを他のピアに通知
+   */
+  private notifyPeersAboutNewProducer(producerPeerId: string, producer: mediasoup.types.Producer): void {
+    this.peers.forEach((peer, peerId) => {
+      if (peerId !== producerPeerId && peer.socket) {
+        peer.socket.emit('newProducer', {
+          producerId: producer.id,
+          producerPeerId,
+          kind: producer.kind
+        });
+      }
+    });
+  }
+
+  /**
+   * 全プロデューサー情報を取得（特定のピア以外）
+   */
+  getProducersForPeer(excludePeerId?: string): Array<{ id: string, peerId: string, kind: mediasoup.types.MediaKind }> {
+    const producers: Array<{ id: string, peerId: string, kind: mediasoup.types.MediaKind }> = [];
+    
+    this.peers.forEach((peer, peerId) => {
+      if (peerId !== excludePeerId) {
+        peer.producers.forEach((producer) => {
+          producers.push({
+            id: producer.id,
+            peerId,
+            kind: producer.kind
+          });
+        });
+      }
+    });
+    
+    return producers;
   }
 }
 

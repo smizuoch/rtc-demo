@@ -4,8 +4,15 @@
   "description": "WebRTC Demo Server with mediasoup",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy-libs",
     "build:test": "tsc -p tsconfig.test.json",
+    "copy-libs": "mkdir -p public/libs && touch public/favicon.ico && (npm run copy-mediasoup-any || npm run download-mediasoup-fallback)",
+    "copy-mediasoup-any": "test -f node_modules/mediasoup-client/lib/mediasoup-client.js && cp node_modules/mediasoup-client/lib/mediasoup-client.js public/libs/mediasoup-client.js || test -f node_modules/mediasoup-client/build/mediasoup-client.js && cp node_modules/mediasoup-client/build/mediasoup-client.js public/libs/mediasoup-client.js || test -f node_modules/mediasoup-client/dist/mediasoup-client.js && cp node_modules/mediasoup-client/dist/mediasoup-client.js public/libs/mediasoup-client.js || test -f node_modules/mediasoup-client/lib/index.js && cp node_modules/mediasoup-client/lib/index.js public/libs/mediasoup-client.js || false",
+    "download-mediasoup-fallback": "curl -L -f -o public/libs/mediasoup-client.js 'https://unpkg.com/mediasoup-client@3.7.6' || curl -L -f -o public/libs/mediasoup-client.js 'https://cdn.skypack.dev/mediasoup-client@3.7.6?min'",
+    "copy-mediasoup-umd": "test -f node_modules/mediasoup-client/lib/index.umd.js && cp node_modules/mediasoup-client/lib/index.umd.js public/libs/mediasoup-client.js || test -f node_modules/mediasoup-client/umd/mediasoup-client.js && cp node_modules/mediasoup-client/umd/mediasoup-client.js public/libs/mediasoup-client.js || test -f node_modules/mediasoup-client/dist/mediasoup-client.umd.js && cp node_modules/mediasoup-client/dist/mediasoup-client.umd.js public/libs/mediasoup-client.js || false",
+    "download-mediasoup-umd": "curl -L -f -o public/libs/mediasoup-client.js 'https://unpkg.com/mediasoup-client@3.7.6/lib/index.umd.js' || curl -L -f -o public/libs/mediasoup-client.js 'https://cdn.jsdelivr.net/npm/mediasoup-client@3.7.6/lib/index.umd.js'",
+    "copy-mediasoup-lib": "test -f node_modules/mediasoup-client/lib/index.umd.js && cp node_modules/mediasoup-client/lib/index.umd.js public/libs/mediasoup-client.js || test -f node_modules/mediasoup-client/build/mediasoup-client.js && cp node_modules/mediasoup-client/build/mediasoup-client.js public/libs/mediasoup-client.js || false",
+    "download-mediasoup-lib": "curl -L -f -o public/libs/mediasoup-client.js 'https://unpkg.com/mediasoup-client@3.7.6/lib/index.umd.js' || curl -L -f -o public/libs/mediasoup-client.js 'https://cdn.skypack.dev/mediasoup-client@3.7.6'",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "npm run build:test && jest",
@@ -27,6 +34,7 @@
     "fastify": "^5.0.0",
     "fastify-plugin": "^4.0.0",
     "mediasoup": "^3.14.0",
+    "mediasoup-client": "^3.7.6",
     "socket.io": "^4.0.0"
   },
   "devDependencies": {

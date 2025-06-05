@@ -4,10 +4,136 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebRTC P2P Demo</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <script>
+        // ライブラリ読み込み状況を追跡
+        window.mediasoupLoaded = false;
+        window.socketIOLoaded = false;
+        window.mediasoupError = null;
+        
+        // MediaSoupライブラリの動的読み込み関数（UMD/ES module両対応）
+        function loadMediaSoupLibrary() {
+            return new Promise((resolve, reject) => {
+                // 既に読み込まれている場合
+                if (typeof mediasoupClient !== 'undefined') {
+                    window.mediasoupLoaded = true;
+                    resolve();
+                    return;
+                }
+                
+                // 最初にスクリプトとして読み込みを試行
+                const script = document.createElement('script');
+                script.src = '/libs/mediasoup-client.js';
+                
+                script.onload = () => {
+                    // UMD形式の場合、mediasoupClientがwindowオブジェクトに追加される
+                    if (typeof mediasoupClient !== 'undefined') {
+                        window.mediasoupLoaded = true;
+                        console.log('MediaSoup loaded as UMD');
+                        console.log('Available methods:', Object.keys(mediasoupClient));
+                        resolve();
+                    } else {
+                        // UMDでない場合、ES moduleとして再試行
+                        console.log('Not UMD, trying as ES module...');
+                        loadAsESModule()
+                            .then(resolve)
+                            .catch(reject);
+                    }
+                };
+                
+                script.onerror = () => {
+                    console.error('Failed to load mediasoup-client.js as script');
+                    // ES moduleとして試行
+                    loadAsESModule()
+                        .then(resolve)
+                        .catch(reject);
+                };
+                
+                document.head.appendChild(script);
+            });
+        }
+        
+        // ES moduleとして読み込み
+        function loadAsESModule() {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    const module = await import('/libs/mediasoup-client.js');
+                    
+                    // ES moduleの場合、デフォルトエクスポートまたは名前付きエクスポートを確認
+                    if (module.default) {
+                        window.mediasoupClient = module.default;
+                    } else if (module.Device) {
+                        window.mediasoupClient = module;
+                    } else {
+                        // 全てのエクスポートをmediasoupClientとして設定
+                        window.mediasoupClient = module;
+                    }
+                    
+                    window.mediasoupLoaded = true;
+                    console.log('MediaSoup loaded as ES module');
+                    console.log('Available methods:', Object.keys(window.mediasoupClient));
+                    resolve();
+                } catch (error) {
+                    console.error('Failed to load as ES module:', error);
+                    // 最後の手段: CDNから読み込み
+                    loadMediaSoupFromCDN()
+                        .then(resolve)
+                        .catch(reject);
+                }
+            });
+        }
+        
+        // CDNからの読み込み
+        function loadMediaSoupFromCDN() {
+            return new Promise((resolve, reject) => {
+                const cdnUrls = [
+                    'https://cdn.skypack.dev/mediasoup-client@3.7.6?min',
+                    'https://unpkg.com/mediasoup-client@3.7.6',
+                    'https://cdn.jsdelivr.net/npm/mediasoup-client@3.7.6'
+                ];
+                
+                let attempts = 0;
+                
+                function tryNextCDN() {
+                    if (attempts >= cdnUrls.length) {
+                        reject(new Error('All CDN attempts failed'));
+                        return;
+                    }
+                    
+                    // ES moduleとしてインポート
+                    import(cdnUrls[attempts])
+                        .then(module => {
+                            if (module.default) {
+                                window.mediasoupClient = module.default;
+                            } else if (module.Device) {
+                                window.mediasoupClient = module;
+                            } else {
+                                window.mediasoupClient = module;
+                            }
+                            
+                            window.mediasoupLoaded = true;
+                            console.log(`MediaSoup loaded from CDN: ${cdnUrls[attempts]}`);
+                            resolve();
+                        })
+                        .catch(error => {
+                            console.warn(`Failed to load from CDN: ${cdnUrls[attempts]}`, error);
+                            attempts++;
+                            tryNextCDN();
+                        });
+                }
+                
+                tryNextCDN();
+            });
+        }
+    </script>
+    <!-- Socket.IOは通常通り読み込み -->
+    <script src="/socket.io/socket.io.js" 
+            onload="window.socketIOLoaded = true; console.log('Socket.IO loaded successfully');" 
+            onerror="console.error('Failed to load socket.io.js');"></script>
     <style>
         body { font-family: Arial, sans-serif; padding: 20px; background: #f0f0f0; }
         .container { max-width: 1200px; margin: 0 auto; }
-        .video-container { display: flex; gap: 20px; margin: 20px 0; }
+        .video-container { display: flex; gap: 20px; margin: 20px 0; flex-wrap: wrap; }
         video { width: 400px; height: 300px; background: #000; border: 2px solid #333; }
         .controls { margin: 20px 0; }
         button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
@@ -18,6 +144,8 @@
         .success { background: #d4edda; color: #155724; }
         .info { background: #d1ecf1; color: #0c5460; }
         #log { height: 200px; overflow-y: auto; background: white; padding: 10px; border: 1px solid #ddd; font-family: monospace; font-size: 12px; }
+        .video-box { text-align: center; }
+        .peer-id { font-size: 12px; color: #666; margin-top: 5px; }
     </style>
 </head>
 <body>
@@ -27,37 +155,75 @@
         
         <div class="controls">
             <button id="startLocalVideo">ローカル映像開始</button>
-            <button id="createRoom" disabled>ルーム作成</button>
+            <button id="joinRoom" disabled>ルーム参加</button>
+            <button id="startSending" disabled>映像送信開始</button>
         </div>
         
         <div class="video-container">
-            <div>
-                <h3>ローカル映像</h3>
+            <div class="video-box">
+                <h3>ローカル映像 (あなた)</h3>
                 <video id="localVideo" autoplay muted playsinline></video>
+                <div class="peer-id" id="localPeerId"></div>
             </div>
-            <div>
-                <h3>リモート映像</h3>
-                <video id="remoteVideo" autoplay playsinline></video>
-            </div>
+            <div id="remoteVideos"></div>
         </div>
         
         <div id="log"></div>
     </div>
 
     <script>
-        const ROOM_ID = 'demo-room';
+        // MediaSoupライブラリが読み込まれるまで待つ（UMD/ES module両対応版）
+        function waitForMediaSoup() {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    await loadMediaSoupLibrary();
+                    
+                    // Device クラスが利用可能か確認
+                    if (typeof mediasoupClient === 'object' && 
+                        (mediasoupClient.Device || (typeof mediasoupClient.default === 'function'))) {
+                        log('MediaSoupクライアントライブラリが読み込まれました');
+                        log(`利用可能なクラス: ${Object.keys(mediasoupClient).join(', ')}`);
+                        resolve();
+                    } else {
+                        throw new Error('MediaSoup Device class not found');
+                    }
+                } catch (error) {
+                    let errorMsg = 'MediaSoupクライアントライブラリの読み込みに失敗しました。';
+                    if (window.mediasoupError) {
+                        errorMsg += ` エラー: ${window.mediasoupError}`;
+                    }
+                    updateStatus(errorMsg, 'error');
+                    log('すべての読み込み方法が失敗しました');
+                    log('サーバーを再起動してライブラリファイルを再生成してください');
+                    reject(new Error(errorMsg));
+                }
+            });
+        }
         
+        const ROOM_ID = 'demo-room';
+        const PEER_ID = 'peer-' + Math.random().toString(36).substr(2, 9);
+        
+        let socket = null;
+        let device = null;
         let localStream = null;
+        let producerTransport = null;
+        let consumerTransports = new Map();
+        let consumers = new Map();
+        let producer = null;
         
         // UI要素
         const statusEl = document.getElementById('status');
         const logEl = document.getElementById('log');
         const localVideo = document.getElementById('localVideo');
-        const remoteVideo = document.getElementById('remoteVideo');
+        const localPeerIdEl = document.getElementById('localPeerId');
+        const remoteVideosEl = document.getElementById('remoteVideos');
         
         // ボタン
         const startLocalVideoBtn = document.getElementById('startLocalVideo');
-        const createRoomBtn = document.getElementById('createRoom');
+        const joinRoomBtn = document.getElementById('joinRoom');
+        const startSendingBtn = document.getElementById('startSending');
+        
+        localPeerIdEl.textContent = `Peer ID: ${PEER_ID}`;
         
         function log(message) {
             const time = new Date().toLocaleTimeString();
@@ -71,6 +237,33 @@
             statusEl.className = `status ${type}`;
         }
         
+        // Socket.IO初期化
+        function initSocket() {
+            socket = io();
+            
+            socket.on('connect', () => {
+                log('Socket.IO接続完了');
+            });
+            
+            socket.on('existingProducers', (producers) => {
+                log(`既存プロデューサー: ${producers.length}個`);
+                producers.forEach(producer => {
+                    consumeVideo(producer.id, producer.peerId);
+                });
+            });
+            
+            socket.on('newProducer', ({ producerId, producerPeerId, kind }) => {
+                log(`新しいプロデューサー: ${producerId} from ${producerPeerId}`);
+                if (kind === 'video') {
+                    consumeVideo(producerId, producerPeerId);
+                }
+            });
+            
+            socket.on('error', (error) => {
+                log(`Socket error: ${error.message}`);
+            });
+        }
+        
         // ローカル映像取得
         startLocalVideoBtn.addEventListener('click', async () => {
             try {
@@ -82,44 +275,46 @@
                 log('ローカル映像を取得しました');
                 updateStatus('ローカル映像取得完了', 'success');
                 startLocalVideoBtn.disabled = true;
-                createRoomBtn.disabled = false;
+                joinRoomBtn.disabled = false;
             } catch (error) {
                 log('ローカル映像取得に失敗: ' + error.message);
                 updateStatus('映像取得エラー', 'error');
             }
         });
         
-        // ルーム作成
-        createRoomBtn.addEventListener('click', async () => {
+        // ルーム参加
+        joinRoomBtn.addEventListener('click', async () => {
             try {
-                const response = await fetch(`/rooms/${ROOM_ID}`, { method: 'POST' });
-                const data = await response.json();
-                log(`ルーム作成完了: ${data.roomId}`);
-                updateStatus('ルーム作成完了', 'success');
-                createRoomBtn.disabled = true;
-            } catch (error) {
-                log('ルーム作成に失敗: ' + error.message);
-                updateStatus('ルーム作成エラー', 'error');
-            }
-        });
-    </script>
-</body>
-</html>
+                updateStatus('MediaSoupライブラリを待機中...', 'info');
+                
+                // MediaSoupライブラリが読み込まれるまで待機
+                await waitForMediaSoup();
+                
+                // Socket.IO初期化
+                initSocket();
+                
+                updateStatus('ルームに参加中...', 'info');
+                
+                // ルーム作成/参加
+                const roomResponse = await fetch(`/rooms/${ROOM_ID}`, { method: 'POST' });
+                if (!roomResponse.ok) {
+                    throw new Error(`ルーム作成/参加に失敗: ${roomResponse.status}`);
+                }
                 const roomData = await roomResponse.json();
                 log(`ルーム参加: ${roomData.roomId}`);
                 
-                // デバイス初期化
-                device = new mediasoupClient.Device();
+                // デバイス初期化（UMD/ES module両対応）
+                const DeviceClass = mediasoupClient.Device || mediasoupClient.default || mediasoupClient;
+                device = new DeviceClass();
                 await device.load({ routerRtpCapabilities: roomData.rtpCapabilities });
                 log('MediaSoup Device初期化完了');
+                
+                // Socket.IOでルーム参加
+                socket.emit('joinRoom', { roomId: ROOM_ID, peerId: PEER_ID });
                 
                 updateStatus('ルーム参加完了', 'success');
                 joinRoomBtn.disabled = true;
                 startSendingBtn.disabled = false;
-                startReceivingBtn.disabled = false;
-                
-                // 既存プロデューサーをチェック
-                await checkExistingProducers();
                 
             } catch (error) {
                 log('ルーム参加に失敗: ' + error.message);
@@ -135,14 +330,15 @@
                 }
                 
                 // Producer Transport作成
-                const transportResponse = await fetch(`${API_BASE}/transports`, {
+                const transportResponse = await fetch(`/rooms/${ROOM_ID}/transports`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         type: 'producer',
                         forceTcp: false,
                         producing: true,
-                        consuming: false
+                        consuming: false,
+                        peerId: PEER_ID
                     })
                 });
                 const transportData = await transportResponse.json();
@@ -157,7 +353,7 @@
                 // Transport接続イベント
                 producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                     try {
-                        await fetch(`${API_BASE}/transports/${producerTransport.id}/connect`, {
+                        await fetch(`/rooms/${ROOM_ID}/transports/${producerTransport.id}/connect`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ dtlsParameters })
@@ -171,10 +367,10 @@
                 // Producer作成イベント
                 producerTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
                     try {
-                        const response = await fetch(`${API_BASE}/transports/${producerTransport.id}/producers`, {
+                        const response = await fetch(`/rooms/${ROOM_ID}/transports/${producerTransport.id}/producers`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ kind, rtpParameters })
+                            body: JSON.stringify({ kind, rtpParameters, peerId: PEER_ID })
                         });
                         const data = await response.json();
                         callback({ id: data.id });
@@ -200,46 +396,29 @@
             }
         });
         
-        // 映像受信開始
-        startReceivingBtn.addEventListener('click', async () => {
-            await checkExistingProducers();
-        });
-        
-        // 既存プロデューサーをチェック
-        async function checkExistingProducers() {
-            try {
-                const response = await fetch(`${API_BASE}/producers`);
-                const data = await response.json();
-                
-                for (const producerInfo of data.producers) {
-                    log(`プロデューサー発見: ${producerInfo.id} (${producerInfo.kind})`);
-                    if (producerInfo.kind === 'video' && !consumers.has(producerInfo.id)) {
-                        await consumeVideo(producerInfo.id);
-                    }
-                }
-            } catch (error) {
-                log('プロデューサー取得エラー: ' + error.message);
-            }
-        }
-        
         // 映像受信
-        async function consumeVideo(producerId) {
+        async function consumeVideo(producerId, producerPeerId) {
             try {
+                if (consumers.has(producerId)) {
+                    return; // 既に受信中
+                }
+                
                 // Consumer Transport作成
-                if (!consumerTransport) {
-                    const transportResponse = await fetch(`${API_BASE}/transports`, {
+                if (!consumerTransports.has(producerPeerId)) {
+                    const transportResponse = await fetch(`/rooms/${ROOM_ID}/transports`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             type: 'consumer',
                             forceTcp: false,
                             producing: false,
-                            consuming: true
+                            consuming: true,
+                            peerId: PEER_ID
                         })
                     });
                     const transportData = await transportResponse.json();
                     
-                    consumerTransport = device.createRecvTransport({
+                    const consumerTransport = device.createRecvTransport({
                         id: transportData.id,
                         iceParameters: transportData.iceParameters,
                         iceCandidates: transportData.iceCandidates,
@@ -249,7 +428,7 @@
                     // Transport接続イベント
                     consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                         try {
-                            await fetch(`${API_BASE}/transports/${consumerTransport.id}/connect`, {
+                            await fetch(`/rooms/${ROOM_ID}/transports/${consumerTransport.id}/connect`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ dtlsParameters })
@@ -259,15 +438,20 @@
                             errback(error);
                         }
                     });
+                    
+                    consumerTransports.set(producerPeerId, consumerTransport);
                 }
                 
+                const consumerTransport = consumerTransports.get(producerPeerId);
+                
                 // Consumer作成
-                const consumerResponse = await fetch(`${API_BASE}/transports/${consumerTransport.id}/consumers`, {
+                const consumerResponse = await fetch(`/rooms/${ROOM_ID}/transports/${consumerTransport.id}/consumers`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         producerId: producerId,
-                        rtpCapabilities: device.rtpCapabilities
+                        rtpCapabilities: device.rtpCapabilities,
+                        peerId: PEER_ID
                     })
                 });
                 const consumerData = await consumerResponse.json();
@@ -280,30 +464,66 @@
                 });
                 
                 // Consumer再開
-                await fetch(`${API_BASE}/consumers/${consumer.id}/resume`, {
+                await fetch(`/rooms/${ROOM_ID}/consumers/${consumer.id}/resume`, {
                     method: 'POST'
                 });
                 
                 // リモート映像表示
                 const stream = new MediaStream([consumer.track]);
-                remoteVideo.srcObject = stream;
+                const videoElement = document.createElement('video');
+                videoElement.autoplay = true;
+                videoElement.playsinline = true;
+                videoElement.style.width = '400px';
+                videoElement.style.height = '300px';
+                videoElement.style.background = '#000';
+                videoElement.style.border = '2px solid #333';
+                videoElement.srcObject = stream;
                 
-                consumers.set(producerId, consumer);
-                log(`映像受信開始: Consumer ID ${consumer.id}`);
-                updateStatus('映像受信中', 'success');
+                const videoBox = document.createElement('div');
+                videoBox.className = 'video-box';
+                videoBox.innerHTML = `<h3>リモート映像</h3>`;
+                videoBox.appendChild(videoElement);
+                videoBox.innerHTML += `<div class="peer-id">Peer ID: ${producerPeerId}</div>`;
+                
+                remoteVideosEl.appendChild(videoBox);
+                
+                consumers.set(producerId, { consumer, element: videoBox });
+                log(`映像受信開始: ${producerPeerId} -> Consumer ID ${consumer.id}`);
                 
             } catch (error) {
                 log('映像受信に失敗: ' + error.message);
-                updateStatus('受信エラー', 'error');
             }
         }
         
-        // 定期的にプロデューサーをチェック
-        setInterval(() => {
-            if (device && device.loaded) {
-                checkExistingProducers();
+        // ページを閉じるときにリソースをクリーンアップ
+        window.addEventListener('beforeunload', () => {
+            if (socket) {
+                socket.emit('leaveRoom');
+                socket.disconnect();
             }
-        }, 5000);
+        });
+        
+        // 初期化時にライブラリの読み込み状態をチェック（UMD対応版）
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                let statusMessage = '';
+                let statusType = 'info';
+                
+                // Socket.IO チェック
+                if (typeof io === 'undefined') {
+                    statusMessage = 'Socket.IOライブラリ読み込み失敗';
+                    statusType = 'error';
+                    log('Socket.IOライブラリの読み込みに失敗しました');
+                } else {
+                    statusMessage = '準備完了（MediaSoup UMDは動的読み込み）';
+                    statusType = 'success';
+                    log('Socket.IOライブラリが正常に読み込まれました');
+                    log('MediaSoup UMDライブラリは必要時に動的読み込みされます');
+                }
+                
+                updateStatus(statusMessage, statusType);
+            }, 1000);
+        });
     </script>
 </body>
 </html>
