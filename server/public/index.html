@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        #messages { border: 1px solid #ccc; padding: 10px; height: 200px; overflow-y: scroll; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebRTC Demo Client</h1>
+        <div id="status" class="status disconnected">未接続</div>
+        
+        <div>
+            <button onclick="connect()">接続</button>
+            <button onclick="disconnect()">切断</button>
+            <button onclick="sendPing()">Ping送信</button>
+        </div>
+        
+        <div id="messages"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket = null;
+        const statusEl = document.getElementById('status');
+        const messagesEl = document.getElementById('messages');
+
+        function updateStatus(text, connected) {
+            statusEl.textContent = text;
+            statusEl.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+
+        function addMessage(msg) {
+            const time = new Date().toLocaleTimeString();
+            messagesEl.innerHTML += `<div>[${time}] ${msg}</div>`;
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function connect() {
+            if (socket) return;
+            
+            socket = io();
+            
+            socket.on('connect', () => {
+                updateStatus('接続済み', true);
+                addMessage('Socket.IOサーバーに接続しました');
+            });
+            
+            socket.on('disconnect', () => {
+                updateStatus('切断済み', false);
+                addMessage('Socket.IOサーバーから切断されました');
+            });
+            
+            socket.on('pong', (data) => {
+                addMessage(`Pongを受信: ${JSON.stringify(data)}`);
+            });
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                updateStatus('未接続', false);
+                addMessage('切断しました');
+            }
+        }
+
+        function sendPing() {
+            if (socket && socket.connected) {
+                const data = { message: 'Hello from client!', timestamp: Date.now() };
+                socket.emit('ping', data);
+                addMessage(`Pingを送信: ${JSON.stringify(data)}`);
+            } else {
+                addMessage('エラー: 接続されていません');
+            }
+        }
+
+        // ページ読み込み時に自動接続
+        window.onload = () => connect();
+    </script>
+</body>
+</html>
