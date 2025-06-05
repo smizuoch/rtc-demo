@@ -30,13 +30,64 @@ export class Room extends EventEmitter {
   /**
    * トランスポートを作成して保存
    */
-  async createTransport(options: mediasoup.types.WebRtcTransportOptions): Promise<mediasoup.types.WebRtcTransport> {
-    const transport = await this.router.createWebRtcTransport(options);
+  async createTransport(
+    options: Partial<mediasoup.types.WebRtcTransportOptions> = {}
+  ): Promise<mediasoup.types.WebRtcTransport> {
+    // 共通のデフォルトオプション
+    const commonOptions = {
+      enableUdp: true,
+      enableTcp: true,
+      preferUdp: true,
+      initialAvailableOutgoingBitrate: 1_000_000,
+      maxSctpMessageSize: 262_144,
+      enableSctp: true,
+      numSctpStreams: { OS: 1024, MIS: 1024 },
+      appData: {}
+    };
+
+    let transportOptions: mediasoup.types.WebRtcTransportOptions;
+
+    // オプションにlistenInfosが指定されている場合
+    if (options.listenInfos && Array.isArray(options.listenInfos)) {
+      // listenInfosを使用するオプション（listenIpsは含めない）
+      const { listenIps, ...filteredOptions } = options;
+      transportOptions = {
+        ...commonOptions,
+        listenInfos: options.listenInfos,
+        ...filteredOptions
+      } as mediasoup.types.WebRtcTransportOptions;
+    } else {
+      // listenIpsを使用するオプション（listenInfosは含めない）
+      const { listenInfos, ...filteredOptions } = options;
+      transportOptions = {
+        ...commonOptions,
+        listenIps: options.listenIps || [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        ...filteredOptions
+      } as mediasoup.types.WebRtcTransportOptions;
+    }
+    
+    const transport = await this.router.createWebRtcTransport(transportOptions);
     this.transports.set(transport.id, transport);
     
-    // トランスポートが閉じられたとき、マップから削除
+    // トランスポートイベントの監視を追加
     transport.on('@close', () => {
       this.transports.delete(transport.id);
+      console.log(`Transport closed: ${transport.id}`);
+    });
+    
+    transport.on('dtlsstatechange', (dtlsState) => {
+      console.log(`Transport ${transport.id} DTLS state: ${dtlsState}`);
+      if (dtlsState === 'failed' || dtlsState === 'closed') {
+        console.warn(`Transport ${transport.id} DTLS failed/closed`);
+      }
+    });
+    
+    transport.on('icestatechange', (iceState) => {
+      console.log(`Transport ${transport.id} ICE state: ${iceState}`);
+      // mediasoup v3.14+の正しいIceState型に対応
+      if (iceState === 'disconnected' || iceState === 'new') {
+        console.warn(`Transport ${transport.id} ICE state changed to: ${iceState}`);
+      }
     });
     
     return transport;
@@ -254,3 +305,5 @@ export class RoomManager {
     return Array.from(this.rooms.values());
   }
 }
+
+

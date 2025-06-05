@@ -1,167 +1,327 @@
+import { FastifyInstance } from 'fastify';
 import * as mediasoup from 'mediasoup';
 import { RoomManager } from '../src/Room';
-import { FastifyInstance } from 'fastify';
-import { createServer } from '../src/server';
+import supertest from 'supertest';
+import './setup';
 
-// グローバル変数の型定義
-declare global {
-  // NodeJSのグローバル名前空間を拡張
-  var roomManager: RoomManager;
-  var worker: mediasoup.types.Worker;
-  var app: FastifyInstance;
-  var cleanup: () => Promise<void>;
-}
+describe('WebRTC API Tests', () => {
+  let request: ReturnType<typeof supertest>;
 
-beforeAll(async () => {
-  // MediaSoupワーカーを作成
-  const worker = await mediasoup.createWorker({
-    rtcMinPort: 40000,
-    rtcMaxPort: 40100
-  });
-  
-  // RoomManagerを作成してグローバルに設定
-  const roomManager = new RoomManager(worker);
-  global.roomManager = roomManager;
-  global.worker = worker;
-  
-  // サーバーアプリケーションを作成
-  const app = await createServer({ roomManager });
-  global.app = app;
-  
-  // テスト終了時のクリーンアップ関数
-  global.cleanup = async () => {
-    // 全ルームの情報をログ出力
-    const rooms = global.roomManager.getAllRooms().map(room => ({
-      id: room.id,
-      transports: room.transports ? room.transports.size : 0,
-      producers: room.producers ? room.producers.size : 0,
-      consumers: room.consumers ? room.consumers.size : 0
-    }));
-    
-    console.log('Cleaning up rooms:', rooms);
-    
-    // すべてのルームを削除
-    for (const room of global.roomManager.getAllRooms()) {
-      global.roomManager.deleteRoom(room.id);
+  afterEach(async () => {
+    if (global.cleanup) {
+      await global.cleanup();
     }
-  };
+  });
 
-  // ルーム削除エンドポイント
-  global.app.delete<{ Params: { id: string } }>('/api/rooms/:id', async (request, reply) => {
-    const { id } = request.params;
-    
-    const deleted = global.roomManager.deleteRoom(id);
-    
-    if (!deleted) {
-      reply.status(404).send({
-        error: 'Room not found'
+  describe('Room Management', () => {
+    test('should create a new room', async () => {
+      const roomId = 'test-room-1';
+      const room = await global.roomManager.createRoom(roomId);
+      expect(room).toBeDefined();
+      expect(room.id).toBe(roomId);
+    });
+  });
+
+  describe('JSON Schema Validation', () => {
+    test('should validate complete transport response schema', async () => {
+      const room = await global.roomManager.createRoom('schema-test-room');
+      const transport = await room.router.createWebRtcTransport({
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          },
+          {
+            protocol: 'tcp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true
       });
-      return;
-    }
-    
-    reply.status(200).send({ success: true });
-    return;
+
+      const response = {
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+        sctpParameters: transport.sctpParameters
+      };
+
+      // 手動スキーマ検証（簡易版）
+      expect(typeof response.id).toBe('string');
+      expect(response.id.length).toBeGreaterThan(0);
+      
+      expect(typeof response.iceParameters).toBe('object');
+      expect(typeof response.iceParameters.usernameFragment).toBe('string');
+      expect(typeof response.iceParameters.password).toBe('string');
+      expect(typeof response.iceParameters.iceLite).toBe('boolean');
+
+      // ICE候補の検証
+      expect(Array.isArray(response.iceCandidates)).toBe(true);
+      expect(response.iceCandidates.length).toBeGreaterThan(0);
+      
+      response.iceCandidates.forEach((candidate: any) => {
+        expect(typeof candidate.foundation).toBe('string');
+        expect(typeof candidate.ip).toBe('string');
+        expect(typeof candidate.port).toBe('number');
+        expect(['host', 'srflx', 'prflx', 'relay'].includes(candidate.type)).toBe(true);
+        expect(['udp', 'tcp'].includes(candidate.protocol)).toBe(true);
+        expect(candidate.priority).toBeGreaterThan(0);
+        expect(candidate.port).toBeGreaterThan(0);
+        expect(candidate.port).toBeLessThan(65536);
+      });
+
+      // DTLS パラメータの検証
+      expect(response.dtlsParameters).toBeDefined();
+      expect(Array.isArray(response.dtlsParameters.fingerprints)).toBe(true);
+      expect(response.dtlsParameters.fingerprints.length).toBeGreaterThan(0);
+      expect(['auto', 'client', 'server'].includes(response.dtlsParameters.role!)).toBe(true);
+
+      response.dtlsParameters.fingerprints.forEach((fingerprint: any) => {
+        expect(typeof fingerprint.algorithm).toBe('string');
+        expect(typeof fingerprint.value).toBe('string');
+        expect(fingerprint.algorithm.length).toBeGreaterThan(0);
+        expect(fingerprint.value.length).toBeGreaterThan(0);
+        // SHA-256フィンガープリントの形式を検証
+        if (fingerprint.algorithm === 'sha-256') {
+          expect(fingerprint.value).toMatch(/^[A-F0-9]{2}(:[A-F0-9]{2}){31}$/);
+        }
+      });
+
+      // SCTP パラメータの検証（存在する場合）
+      if (response.sctpParameters) {
+        expect(response.sctpParameters.port).toBeDefined();
+        expect(typeof response.sctpParameters.port).toBe('number');
+        expect(response.sctpParameters.port).toBeGreaterThan(0);
+        expect(response.sctpParameters.port).toBeLessThan(65536);
+
+        expect(response.sctpParameters.OS).toBeDefined();
+        expect(typeof response.sctpParameters.OS).toBe('number');
+        expect(response.sctpParameters.OS).toBeGreaterThan(0);
+
+        expect(response.sctpParameters.MIS).toBeDefined();
+        expect(typeof response.sctpParameters.MIS).toBe('number');
+        expect(response.sctpParameters.MIS).toBeGreaterThan(0);
+
+        expect(response.sctpParameters.maxMessageSize).toBeDefined();
+        expect(typeof response.sctpParameters.maxMessageSize).toBe('number');
+        expect(response.sctpParameters.maxMessageSize).toBeGreaterThan(0);
+      }
+
+      transport.close();
+    });
+
+    test('should validate transport event handling', async () => {
+      const room = await global.roomManager.createRoom('event-test-room');
+      const transport = await room.router.createWebRtcTransport({
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          },
+          {
+            protocol: 'tcp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
+        enableUdp: true,
+        enableTcp: true
+      });
+
+      expect(transport.dtlsState).toBe('new');
+      expect(transport.closed).toBe(false);
+
+      transport.close();
+      expect(transport.closed).toBe(true);
+    });
+
+    test('should handle transport configuration variations', async () => {
+      const room = await global.roomManager.createRoom('config-test-room');
+      
+      // TCP優先トランスポート
+      const tcpTransport = await room.router.createWebRtcTransport({
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          },
+          {
+            protocol: 'tcp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
+        enableUdp: true,
+        enableTcp: true,
+        preferTcp: true
+      });
+
+      expect(tcpTransport.id).toBeDefined();
+      expect(tcpTransport.iceParameters).toBeDefined();
+      expect(tcpTransport.iceCandidates).toBeDefined();
+      expect(tcpTransport.dtlsParameters).toBeDefined();
+
+      tcpTransport.close();
+    });
+
+    test('should handle multiple transports', async () => {
+      const room = await global.roomManager.createRoom('multi-transport-room');
+      
+      const transport1 = await room.router.createWebRtcTransport({
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
+        enableUdp: true,
+        enableTcp: true
+      });
+
+      const transport2 = await room.router.createWebRtcTransport({
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
+        enableUdp: true,
+        enableTcp: true
+      });
+
+      expect(transport1.id).not.toBe(transport2.id);
+      expect(transport1.iceParameters.usernameFragment).not.toBe(transport2.iceParameters.usernameFragment);
+
+      transport1.close();
+      transport2.close();
+    });
+
+    test('should validate transport stats', async () => {
+      const room = await global.roomManager.createRoom('stats-test-room');
+      const transport = await room.router.createWebRtcTransport({
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
+        enableUdp: true,
+        enableTcp: true
+      });
+
+      const stats = await transport.getStats();
+      expect(Array.isArray(stats)).toBe(true);
+
+      transport.close();
+    });
   });
 
-  // トランスポートパラメータ取得エンドポイント
-  global.app.get('/api/transport/params', async (request, reply) => {
-    // デフォルトルームを取得または作成
-    const room = await global.roomManager.createRoom('default');
+  describe('API Endpoints', () => {
+    let roomId: string;
     
-    // WebRTCトランスポートを作成
-    const transport = await room.router.createWebRtcTransport({
-      listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
-      enableUdp: true,
-      enableTcp: true,
-      preferUdp: true
+    beforeEach(async () => {
+      roomId = `test-room-api-${Date.now()}`;
+      await global.roomManager.createRoom(roomId);
+      request = supertest(global.app.server);
     });
     
-    reply.send({
-      id: transport.id,
-      iceParameters: transport.iceParameters,
-      iceCandidates: transport.iceCandidates,
-      dtlsParameters: transport.dtlsParameters,
-      sctpParameters: transport.sctpParameters
-    });
-  });
-
-  // プロデューサー作成エンドポイント
-  global.app.post<{
-    Body: {
-      transportId: string;
-      kind: mediasoup.types.MediaKind;
-      rtpParameters: mediasoup.types.RtpParameters;
-      roomId: string;
-    }
-  }>('/api/transport/produce', async (request, reply) => {
-    const { transportId, kind, rtpParameters, roomId } = request.body;
-    
-    const room = global.roomManager.getRoom(roomId);
-    if (!room) {
-      return reply.status(404).send({ error: 'Room not found' });
-    }
-    
-    const transport = room.transports?.get(transportId);
-    if (!transport) {
-      return reply.status(404).send({ error: 'Transport not found' });
-    }
-    
-    const producer = await transport.produce({ kind, rtpParameters });
-    
-    return {
-      id: producer.id,
-      kind: producer.kind
-    };
-  });
-
-  // コンシューマー作成エンドポイント
-  global.app.post<{
-    Body: {
-      transportId: string;
-      producerId: string;
-      rtpCapabilities: mediasoup.types.RtpCapabilities;
-      roomId: string;
-    }
-  }>('/api/transport/consume', async (request, reply) => {
-    const { transportId, producerId, rtpCapabilities, roomId } = request.body;
-    
-    const room = global.roomManager.getRoom(roomId);
-    if (!room) {
-      return reply.status(404).send({ error: 'Room not found' });
-    }
-    
-    const transport = room.transports?.get(transportId);
-    if (!transport) {
-      return reply.status(404).send({ error: 'Transport not found' });
-    }
-    
-    const consumer = await transport.consume({
-      producerId,
-      rtpCapabilities,
-      paused: true
+    test('should create producer transport via API', async () => {
+      const transportResponse = await request
+        .post(`/rooms/${roomId}/transports`)
+        .send({
+          type: 'producer',
+          forceTcp: false,
+          producing: true,
+          consuming: false
+        })
+        .expect(200);
+        
+      expect(transportResponse.body).toBeDefined();
+      expect(transportResponse.body.id).toBeDefined();
+      expect(transportResponse.body.iceParameters).toBeDefined();
+      expect(transportResponse.body.iceCandidates).toBeDefined();
+      expect(transportResponse.body.dtlsParameters).toBeDefined();
     });
     
-    return {
-      id: consumer.id,
-      kind: consumer.kind,
-      rtpParameters: consumer.rtpParameters,
-      producerId: consumer.producerId
-    };
+    test('should create consumer transport via API', async () => {
+      const transportResponse = await request
+        .post(`/rooms/${roomId}/transports`)
+        .send({
+          type: 'consumer',
+          forceTcp: false,
+          producing: false,
+          consuming: true
+        })
+        .expect(200);
+      expect(transportResponse.body.dtlsParameters).toBeDefined();
+    });
+    
+    test('should create video producer via API', async () => {
+      // まず、プロデューサートランスポートを作成
+      const transportResponse = await request
+        .post(`/rooms/${roomId}/transports`)
+        .send({
+          type: 'producer',
+          forceTcp: false,
+          producing: true,
+          consuming: false
+        })
+        .expect(200);
+      
+      const transportId = transportResponse.body.id;
+      
+      // プロデューサーを作成
+      const producerResponse = await request
+        .post(`/rooms/${roomId}/transports/${transportId}/producers`)
+        .send({
+          kind: 'video',
+          rtpParameters: {
+            mid: '0',
+            codecs: [
+              {
+                mimeType: 'video/VP8',
+                payloadType: 101,
+                clockRate: 90000,
+                parameters: {},
+                rtcpFeedback: [
+                  { type: 'nack' },
+                  { type: 'nack', parameter: 'pli' },
+                  { type: 'ccm', parameter: 'fir' }
+                ]
+              }
+            ],
+            headerExtensions: [
+              { uri: 'urn:ietf:params:rtp-hdrext:sdes:mid', id: 1 }
+            ],
+            encodings: [
+              {
+                ssrc: 12345678,
+                rtx: {
+                  ssrc: 12345679
+                }
+              }
+            ],
+            rtcp: {
+              cname: 'test-cname',
+              reducedSize: true
+            }
+          }
+        })
+        .expect(200);
+      
+      expect(producerResponse.body).toBeDefined();
+      expect(producerResponse.body.id).toBeDefined();
+      expect(producerResponse.body.kind).toBe('video');
+    });
   });
-
-  await global.app.ready();
-});
-
-afterAll(async () => {
-  if (global.cleanup) {
-    await global.cleanup();
-  }
-  
-  if (global.app) {
-    await global.app.close();
-  }
-  
-  if (global.worker) {
-    global.worker.close();
-  }
 });

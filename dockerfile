@@ -69,7 +69,10 @@ RUN if [ -f "public/libs/mediasoup-client.js" ]; then \
 
 # favicon.icoを作成
 RUN echo "Creating favicon..." && \
-    touch public/favicon.ico
+    mkdir -p public && \
+    touch public/favicon.ico && \
+    # 空のICOファイルとして最小限のヘッダーを作成
+    printf '\x00\x00\x01\x00\x01\x00\x10\x10\x00\x00\x01\x00\x08\x00\x68\x04\x00\x00\x16\x00\x00\x00' > public/favicon.ico
 
 RUN npm run build
 

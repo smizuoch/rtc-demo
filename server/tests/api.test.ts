@@ -26,7 +26,18 @@ describe('WebRTC API Tests', () => {
     test('should validate complete transport response schema', async () => {
       const room = await global.roomManager.createRoom('schema-test-room');
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          },
+          {
+            protocol: 'tcp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true
@@ -107,7 +118,18 @@ describe('WebRTC API Tests', () => {
     test('should validate transport event handling', async () => {
       const room = await global.roomManager.createRoom('event-test-room');
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          },
+          {
+            protocol: 'tcp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
         enableUdp: true,
         enableTcp: true
       });
@@ -124,7 +146,18 @@ describe('WebRTC API Tests', () => {
       
       // TCP優先トランスポート
       const tcpTransport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          },
+          {
+            protocol: 'tcp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
         enableUdp: true,
         enableTcp: true,
         preferTcp: true
@@ -142,13 +175,25 @@ describe('WebRTC API Tests', () => {
       const room = await global.roomManager.createRoom('multi-transport-room');
       
       const transport1 = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
         enableUdp: true,
         enableTcp: true
       });
 
       const transport2 = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
         enableUdp: true,
         enableTcp: true
       });
@@ -163,7 +208,13 @@ describe('WebRTC API Tests', () => {
     test('should validate transport stats', async () => {
       const room = await global.roomManager.createRoom('stats-test-room');
       const transport = await room.router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }],
+        listenInfos: [
+          {
+            protocol: 'udp' as const,
+            ip: '0.0.0.0',
+            announcedAddress: '127.0.0.1'
+          }
+        ],
         enableUdp: true,
         enableTcp: true
       });

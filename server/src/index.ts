@@ -127,7 +127,7 @@ const start = async () => {
 
     app.get('/health', () => ({ status: 'ok' }));
 
-    // favicon.ico ルート追加
+    // favicon.ico ルート修正
     app.get('/favicon.ico', async (request, reply) => {
       try {
         const faviconPath = path.join(__dirname, '../public/favicon.ico');
@@ -135,10 +135,27 @@ const start = async () => {
           reply.type('image/x-icon');
           return fs.createReadStream(faviconPath);
         } else {
-          reply.code(204).send(); // No Content
+          // 空のfaviconを作成
+          const emptyFavicon = Buffer.alloc(1078, 0);
+          // ICOファイルヘッダーを設定
+          emptyFavicon.writeUInt16LE(0, 0); // reserved
+          emptyFavicon.writeUInt16LE(1, 2); // image type (1 = ICO)
+          emptyFavicon.writeUInt16LE(1, 4); // number of images
+          emptyFavicon[6] = 16; // width
+          emptyFavicon[7] = 16; // height
+          emptyFavicon[8] = 0;  // color count
+          emptyFavicon[9] = 0;  // reserved
+          emptyFavicon.writeUInt16LE(1, 10); // color planes
+          emptyFavicon.writeUInt16LE(8, 12); // bits per pixel
+          emptyFavicon.writeUInt32LE(1024, 14); // image size
+          emptyFavicon.writeUInt32LE(22, 18); // image offset
+          
+          reply.type('image/x-icon');
+          return emptyFavicon;
         }
       } catch (error) {
-        reply.code(204).send();
+        console.warn('Favicon error:', error);
+        reply.code(204).send(); // No Content
       }
     });
 
@@ -162,6 +179,29 @@ const start = async () => {
       }));
       
       return { rooms };
+    });
+
+    // WebRTCデバッグ情報追加
+    app.get('/debug/webrtc', async (request, reply) => {
+      const rooms = roomManager.getAllRooms().map(room => ({
+        id: room.id,
+        peersCount: room.peers.size,
+        transportsCount: room.transports.size,
+        producersCount: room.producers.size,
+        consumersCount: room.consumers.size,
+        peers: Array.from(room.peers.keys()),
+        transports: Array.from(room.transports.keys()),
+        producers: Array.from(room.producers.keys()),
+        consumers: Array.from(room.consumers.keys())
+      }));
+      
+      return {
+        rooms,
+        worker: {
+          pid: worker.pid,
+          closed: worker.closed
+        }
+      };
     });
 
     // サーバー起動

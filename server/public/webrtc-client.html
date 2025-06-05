@@ -343,24 +343,45 @@
                 });
                 const transportData = await transportResponse.json();
                 
+                // STUNサーバー設定を追加
+                const iceServers = [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ];
+                
                 producerTransport = device.createSendTransport({
                     id: transportData.id,
                     iceParameters: transportData.iceParameters,
                     iceCandidates: transportData.iceCandidates,
-                    dtlsParameters: transportData.dtlsParameters
+                    dtlsParameters: transportData.dtlsParameters,
+                    iceServers: iceServers // STUNサーバー追加
                 });
                 
                 // Transport接続イベント
                 producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                     try {
+                        log('Producer transport connecting...');
                         await fetch(`/rooms/${ROOM_ID}/transports/${producerTransport.id}/connect`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ dtlsParameters })
                         });
+                        log('Producer transport connected');
                         callback();
                     } catch (error) {
+                        log(`Producer transport connect error: ${error.message}`);
                         errback(error);
+                    }
+                });
+                
+                // ICE状態変化の監視
+                producerTransport.on('connectionstatechange', (state) => {
+                    log(`Producer transport connection state: ${state}`);
+                    if (state === 'connected') {
+                        updateStatus('送信接続完了', 'success');
+                    } else if (state === 'failed' || state === 'disconnected') {
+                        updateStatus('送信接続エラー', 'error');
                     }
                 });
                 
@@ -418,24 +439,45 @@
                     });
                     const transportData = await transportResponse.json();
                     
+                    // STUNサーバー設定を追加
+                    const iceServers = [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' }
+                    ];
+                    
                     const consumerTransport = device.createRecvTransport({
                         id: transportData.id,
                         iceParameters: transportData.iceParameters,
                         iceCandidates: transportData.iceCandidates,
-                        dtlsParameters: transportData.dtlsParameters
+                        dtlsParameters: transportData.dtlsParameters,
+                        iceServers: iceServers // STUNサーバー追加
                     });
                     
                     // Transport接続イベント
                     consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                         try {
+                            log(`Consumer transport connecting for ${producerPeerId}...`);
                             await fetch(`/rooms/${ROOM_ID}/transports/${consumerTransport.id}/connect`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ dtlsParameters })
                             });
+                            log(`Consumer transport connected for ${producerPeerId}`);
                             callback();
                         } catch (error) {
+                            log(`Consumer transport connect error for ${producerPeerId}: ${error.message}`);
                             errback(error);
+                        }
+                    });
+                    
+                    // ICE状態変化の監視
+                    consumerTransport.on('connectionstatechange', (state) => {
+                        log(`Consumer transport connection state for ${producerPeerId}: ${state}`);
+                        if (state === 'connected') {
+                            log(`受信接続完了: ${producerPeerId}`);
+                        } else if (state === 'failed' || state === 'disconnected') {
+                            log(`受信接続エラー: ${producerPeerId}`);
                         }
                     });
                     
